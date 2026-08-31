@@ -1,0 +1,30 @@
+[project]
+name = "reliable-agents"
+version = "0.1.0"
+description = "Experiments in building more reliable AI agents"
+readme = "README.md"
+authors = [
+    { name = "Quan Hua", email = "quanhua92@gmail.com" }
+]
+requires-python = ">=3.13"
+dependencies = []
+
+[project.scripts]
+reliable-agents = "reliable_agents.cli:main"
+reli = "reliable_agents.cli:main"
+
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[dependency-groups]
+dev = [
+    "pyright>=1.1.411",
+    "ruff>=0.16.5",
+]
+
+[tool.pyright]
+include = ["src"]
+pythonVersion = "3.13"
+typeCheckingMode = "strict"
