@@ -30,6 +30,12 @@ class DoneContract:
 
 
 @dataclass(frozen=True, slots=True)
+class PolicyDecision:
+    decision: Decision
+    reason: str
+
+
+@dataclass(frozen=True, slots=True)
 class ActionRequest:
     tool_name: str
     arguments: dict[str, Any]
@@ -60,7 +66,7 @@ class VerificationResult:
 
 
 @dataclass(frozen=True, slots=True)
-class Receipt:
+class RunEvidence:
     run_id: str
     goal_id: str
     done_contract_version: str
@@ -76,5 +82,5 @@ class Receipt:
 @dataclass(frozen=True, slots=True)
 class RunOutcome:
     state: FinalState
-    receipt: Receipt | None
+    evidence: RunEvidence | None
     last_verification: VerificationResult | None

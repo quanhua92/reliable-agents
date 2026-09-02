@@ -2,6 +2,8 @@ from reliable_agents.models import DoneContract, Goal, VerificationResult, Worke
 
 
 class IndependentVerifier:
+    version = "independent-verifier@0.1.0"
+
     def verify(
         self, goal: Goal, contract: DoneContract, output: WorkerOutput
     ) -> VerificationResult:

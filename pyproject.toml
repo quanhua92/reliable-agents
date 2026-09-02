@@ -7,7 +7,9 @@ authors = [
     { name = "Quan Hua", email = "quanhua92@gmail.com" }
 ]
 requires-python = ">=3.13"
-dependencies = []
+dependencies = [
+    "uuid-utils>=0.17.0",
+]
 
 [project.scripts]
 reliable-agents = "reliable_agents.cli:main"

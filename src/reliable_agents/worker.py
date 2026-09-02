@@ -10,6 +10,8 @@ from reliable_agents.models import (
 
 
 class EvidenceGuidedWorker:
+    version = "evidience-guided-worker@0.1.0"
+
     def run(
         self,
         goal: Goal,
