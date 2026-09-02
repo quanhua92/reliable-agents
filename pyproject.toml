@@ -12,6 +12,7 @@ dependencies = []
 [project.scripts]
 reliable-agents = "reliable_agents.cli:main"
 reli = "reliable_agents.cli:main"
+demo = "reliable_agents.demo:main"
 
 
 [build-system]

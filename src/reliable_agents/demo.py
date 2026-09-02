@@ -1,16 +1,15 @@
 import argparse
 
 from reliable_agents.models import DoneContract, Goal, WorkerOutput
+from reliable_agents.tool import WriteValueTool
 from reliable_agents.verifier import IndependentVerifier
-from reliable_agents.worker import AlwaysWrongWorker, EvidenceGuidedWorker
+from reliable_agents.worker import EvidenceGuidedWorker
 
 
 def main():
     """Worker Output -> Verifier -> VerificationResult"""
     parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--mode", choices=["evidence", "always-wrong"], default="evidence"
-    )
+    parser.add_argument("--mode", choices=["evidence"], default="evidence")
 
     args = parser.parse_args()
 
@@ -27,11 +26,9 @@ def main():
     output = WorkerOutput(value=3, summary="Done! Everything is correct")
 
     verifier = IndependentVerifier()
+    tool = WriteValueTool()
 
-    if args.mode == "always-wrong":
-        worker = AlwaysWrongWorker()
-    else:
-        worker = EvidenceGuidedWorker()
+    worker = EvidenceGuidedWorker()
 
     retry_budget = 2
     previous_failure = None
@@ -40,15 +37,17 @@ def main():
         print("===" * 20)
         print(f"attempt {attempt}")
 
-        output = worker.run(
+        turn = worker.run(
             goal=goal, contract=contract, previous_failure=previous_failure
         )
-        print("worker output:", output)
+        print("worker turn:", turn)
+
+        output = tool.execute(turn.action)
 
         result = verifier.verify(goal=goal, contract=contract, output=output)
 
-        print("worker output summary:", output.summary)
-        print("worker output value:", output.value)
+        print("tool output summary:", output.summary)
+        print("tool output value:", output.value)
         print("verification:", result)
 
         if result.passed:

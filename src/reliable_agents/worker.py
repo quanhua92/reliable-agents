@@ -1,4 +1,12 @@
-from reliable_agents.models import DoneContract, Goal, VerificationResult, WorkerOutput
+import hashlib
+
+from reliable_agents.models import (
+    ActionRequest,
+    DoneContract,
+    Goal,
+    VerificationResult,
+    WorkerTurn,
+)
 
 
 class EvidenceGuidedWorker:
@@ -7,20 +15,23 @@ class EvidenceGuidedWorker:
         goal: Goal,
         contract: DoneContract,
         previous_failure: VerificationResult | None,
-    ) -> WorkerOutput:
+    ) -> WorkerTurn:
         if previous_failure is None:
             value = contract.required_value - 1
         else:
             value = contract.required_value
 
-        return WorkerOutput(value=value, summary=f"Proposed value {value}")
+        key_material = f"{goal.goal_id}:write_value:{value}"
 
+        idempotency_key = hashlib.sha256(key_material.encode("utf-8")).hexdigest()
 
-class AlwaysWrongWorker:
-    def run(
-        self,
-        goal: Goal,
-        contract: DoneContract,
-        previous_failure: VerificationResult | None,
-    ) -> WorkerOutput:
-        return WorkerOutput(value=3, summary="I am certain this is correct")
+        return WorkerTurn(
+            action=ActionRequest(
+                tool_name="write_value",
+                arguments={"value": value},
+                mutating=True,
+                idempotency_key=idempotency_key,
+                claimed_tier=4,
+            ),
+            summary=f"Proposed value {value}",
+        )
