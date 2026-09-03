@@ -5,7 +5,7 @@ import time
 from reliable_agents.models import DoneContract, FinalState, Goal, RunEvidence
 
 
-def create_evidence(
+def create_run_evidence(
     run_id: str,
     goal: Goal,
     contract: DoneContract,
