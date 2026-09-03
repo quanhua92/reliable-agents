@@ -81,6 +81,7 @@ class RunEvidence:
 
 @dataclass(frozen=True, slots=True)
 class RunOutcome:
+    run_id: str
     state: FinalState
     evidence: RunEvidence | None
     last_verification: VerificationResult | None

@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import Final
 
 import uuid_utils.compat as uuid
 
@@ -17,12 +18,35 @@ from reliable_agents.verifier import IndependentVerifier
 from reliable_agents.worker import EvidenceGuidedWorker
 
 
+def reconstruct_final_state(events: list[dict]) -> FinalState | None:
+    for event in reversed(events):
+        match event["kind"]:
+            case "RunCompleted":
+                return FinalState.VERIFIED
+            case "RunBlocked":
+                return FinalState.BLOCKED
+            case "RunEscalated":
+                return FinalState.ESCALATED
+    return None
+
+
 def execute(
-    goal: Goal, contract: DoneContract, authoritative_tier: int, retry_budget: int = 2
+    goal: Goal,
+    contract: DoneContract,
+    authoritative_tier: int,
+    retry_budget: int = 2,
+    run_id: str | None = None,
 ) -> RunOutcome:
-    run_id = str(uuid.uuid7())
+    if run_id is None:
+        run_id = str(uuid.uuid7())
 
     events = JsonlEventStore(project_path=Path.cwd())
+
+    history = events.load(run_id)
+    existing_state = reconstruct_final_state(history)
+
+    if existing_state is not None:
+        raise RuntimeError(f"Run {run_id} is already terminal: {existing_state.value}")
 
     verifier = IndependentVerifier()
     tool = WriteValueTool()
@@ -76,7 +100,10 @@ def execute(
             },
         )
         return RunOutcome(
-            state=FinalState.BLOCKED, evidence=None, last_verification=None
+            run_id=run_id,
+            state=FinalState.BLOCKED,
+            evidence=None,
+            last_verification=None,
         )
 
     for attempt in range(1, retry_budget + 1):
@@ -132,6 +159,7 @@ def execute(
                 },
             )
             return RunOutcome(
+                run_id=run_id,
                 state=FinalState.BLOCKED,
                 evidence=None,
                 last_verification=previous_failure,
@@ -205,6 +233,7 @@ def execute(
                 },
             )
             return RunOutcome(
+                run_id=run_id,
                 state=FinalState.VERIFIED,
                 evidence=evidence,
                 last_verification=verification,
@@ -219,6 +248,7 @@ def execute(
                 },
             )
             return RunOutcome(
+                run_id=run_id,
                 state=FinalState.ESCALATED,
                 evidence=None,
                 last_verification=verification,
@@ -245,6 +275,7 @@ def execute(
         },
     )
     return RunOutcome(
+        run_id=run_id,
         state=FinalState.ESCALATED,
         evidence=None,
         last_verification=previous_failure,
@@ -267,13 +298,23 @@ def main():
     authoritative_tier = 2
     retry_budget = 2
 
-    outcome = execute(goal, contract, authoritative_tier, retry_budget)
+    run_id = None
+    outcome = execute(goal, contract, authoritative_tier, retry_budget, run_id)
+
+    events = JsonlEventStore(project_path=Path.cwd())
+    history = events.load(outcome.run_id)
+
+    reconstructed_state = reconstruct_final_state(history)
 
     print("=" * 80)
     print("FINAL OUTCOME")
+    print("run_id:", outcome.run_id)
     print("state:", outcome.state)
+    print("reconstructed_state:", reconstructed_state)
     print("evidence:", outcome.evidence)
     print("last verification:", outcome.last_verification)
+
+    assert reconstructed_state is outcome.state
 
 
 if __name__ == "__main__":
