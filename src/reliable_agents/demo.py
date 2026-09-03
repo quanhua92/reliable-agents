@@ -36,11 +36,12 @@ def execute(
     authoritative_tier: int,
     retry_budget: int = 2,
     run_id: str | None = None,
+    base_directory: Path | None = None,
 ) -> RunOutcome:
     if run_id is None:
         run_id = str(uuid.uuid7())
 
-    events = JsonlEventStore(project_path=Path.cwd())
+    events = JsonlEventStore(project_path=Path.cwd(), base_directory=base_directory)
 
     history = events.load(run_id)
     existing_state = reconstruct_final_state(history)

@@ -5,9 +5,6 @@ from functools import partial
 from pathlib import Path
 from typing import Any
 
-STATE_DIR = Path.home() / ".reliable_agents"
-PROJECTS_DIR = STATE_DIR / "projects"
-
 
 def project_slug(path: Path) -> str:
     resolved = path.resolve()
@@ -25,14 +22,20 @@ def project_slug(path: Path) -> str:
 class JsonlEventStore:
     version = "jsonl-event-store@0.1.0"
 
-    def __init__(
-        self, project_path: Path, projects_directory: Path = PROJECTS_DIR
-    ) -> None:
+    def __init__(self, project_path: Path, base_directory: Path | None = None) -> None:
+        if base_directory is None:
+            base_directory = Path.home()
+        self.base_directory = base_directory
         self.project_path = project_path.resolve()
-        self.projects_directory = projects_directory
+
+    def state_directory(self) -> Path:
+        return self.base_directory / ".reliable_agents"
+
+    def projects_directory(self) -> Path:
+        return self.state_directory() / "projects"
 
     def project_directory(self) -> Path:
-        return self.projects_directory / project_slug(self.project_path)
+        return self.projects_directory() / project_slug(self.project_path)
 
     def runs_directory(self) -> Path:
         return self.project_directory() / "runs"
