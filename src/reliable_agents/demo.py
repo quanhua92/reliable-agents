@@ -1,8 +1,8 @@
 from pathlib import Path
-from typing import Final
 
 import uuid_utils.compat as uuid
 
+from reliable_agents.digest import action_request_digest
 from reliable_agents.evidence import create_run_evidence
 from reliable_agents.models import (
     Decision,
@@ -10,9 +10,10 @@ from reliable_agents.models import (
     FinalState,
     Goal,
     RunOutcome,
+    WorkerOutput,
 )
 from reliable_agents.policy import StaticPolicyEngine
-from reliable_agents.storage import JsonlEventStore
+from reliable_agents.storage import JsonlEffectStore, JsonlEventStore, StorageLayout
 from reliable_agents.tool import WriteValueTool
 from reliable_agents.verifier import IndependentVerifier
 from reliable_agents.worker import EvidenceGuidedWorker
@@ -41,7 +42,11 @@ def execute(
     if run_id is None:
         run_id = str(uuid.uuid7())
 
-    events = JsonlEventStore(project_path=Path.cwd(), base_directory=base_directory)
+    layout = StorageLayout.create(
+        project_path=Path.cwd(), base_directory=base_directory
+    )
+    events = JsonlEventStore(layout)
+    effects = JsonlEffectStore(layout)
 
     history = events.load(run_id)
     existing_state = reconstruct_final_state(history)
@@ -116,9 +121,14 @@ def execute(
         )
 
         turn = worker.run(
-            goal=goal, contract=contract, previous_failure=previous_failure
+            goal=goal,
+            contract=contract,
+            previous_failure=previous_failure,
+            effect_sequence=attempt,
         )
         print("worker turn:", turn)
+
+        request_digest = action_request_digest(turn.action)
 
         events.append(
             run_id=run_id,
@@ -128,6 +138,8 @@ def execute(
                 "tool_name": turn.action.tool_name,
                 "arguments": turn.action.arguments,
                 "mutating": turn.action.mutating,
+                "effect_id": turn.action.effect_id,
+                "request_digest": request_digest,
                 "idempotency_key": turn.action.idempotency_key,
                 "claimed_tier": turn.action.claimed_tier,
                 "summary": turn.summary,
@@ -166,7 +178,64 @@ def execute(
                 last_verification=previous_failure,
             )
 
-        output = tool.execute(turn.action)
+        existing_effect = effects.lookup(turn.action.idempotency_key)
+        effect_reused = False
+
+        if existing_effect is None:
+            effects.record_intent(request=turn.action, request_digest=request_digest)
+            output = tool.execute(turn.action)
+            effects.record_success(
+                request=turn.action, request_digest=request_digest, output=output
+            )
+        else:
+            stored_digest = str(existing_effect["request_digest"])
+            if stored_digest != request_digest:
+                events.append(
+                    run_id,
+                    "RunEscalated",
+                    {
+                        "reason": "idempotency key reused with different request",
+                        "effect_id": turn.action.effect_id,
+                        "idempotency_key": turn.action.idempotency_key,
+                    },
+                )
+                return RunOutcome(
+                    run_id=run_id,
+                    state=FinalState.ESCALATED,
+                    evidence=None,
+                    last_verification=previous_failure,
+                )
+            status = str(existing_effect["status"])
+
+            if status == "INTENT":
+                events.append(
+                    run_id,
+                    "RunEscalated",
+                    {
+                        "reason": "effect requires reconciliation",
+                        "effect_id": turn.action.effect_id,
+                        "idempotency_key": turn.action.idempotency_key,
+                    },
+                )
+                return RunOutcome(
+                    run_id=run_id,
+                    state=FinalState.ESCALATED,
+                    evidence=None,
+                    last_verification=previous_failure,
+                )
+            if status == "COMPLETED":
+                result = existing_effect["result"]
+
+                if not isinstance(result, dict):
+                    raise RuntimeError("Completed effect has no result")
+
+                output = WorkerOutput(
+                    value=int(result["value"]), summary=str(result["summary"])
+                )
+                effect_reused = True
+            else:
+                raise RuntimeError(f"Unknown effect status: {status}")
+
         tools_used.add(tool.version)
 
         events.append(
@@ -177,6 +246,9 @@ def execute(
                 "tool": tool.version,
                 "value": output.value,
                 "summary": output.summary,
+                "effect_id": turn.action.effect_id,
+                "idempotency_key": turn.action.idempotency_key,
+                "reused": effect_reused,
             },
         )
 
@@ -302,7 +374,8 @@ def main():
     run_id = None
     outcome = execute(goal, contract, authoritative_tier, retry_budget, run_id)
 
-    events = JsonlEventStore(project_path=Path.cwd())
+    layout = StorageLayout.create(project_path=Path.cwd())
+    events = JsonlEventStore(layout)
     history = events.load(outcome.run_id)
 
     reconstructed_state = reconstruct_final_state(history)

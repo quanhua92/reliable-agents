@@ -1,5 +1,4 @@
-import hashlib
-
+from reliable_agents.digest import effect_idempotency_key
 from reliable_agents.models import (
     ActionRequest,
     DoneContract,
@@ -17,18 +16,22 @@ class EvidenceGuidedWorker:
         goal: Goal,
         contract: DoneContract,
         previous_failure: VerificationResult | None,
+        effect_sequence: int,
     ) -> WorkerTurn:
         if previous_failure is None:
             value = contract.required_value - 1
         else:
             value = contract.required_value
 
-        key_material = f"{goal.goal_id}:write_value:{value}"
+        effect_id = f"write-required-value:{effect_sequence}"
 
-        idempotency_key = hashlib.sha256(key_material.encode("utf-8")).hexdigest()
+        idempotency_key = effect_idempotency_key(
+            goal_id=goal.goal_id, effect_id=effect_id
+        )
 
         return WorkerTurn(
             action=ActionRequest(
+                effect_id=effect_id,
                 tool_name="write_value",
                 arguments={"value": value},
                 mutating=True,

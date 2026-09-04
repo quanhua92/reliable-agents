@@ -40,6 +40,7 @@ class ActionRequest:
     tool_name: str
     arguments: dict[str, Any]
     mutating: bool
+    effect_id: str
     idempotency_key: str
     claimed_tier: int | None = None
 
