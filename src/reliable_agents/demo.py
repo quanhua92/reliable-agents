@@ -181,6 +181,21 @@ def execute(
         existing_effect = effects.lookup(turn.action.idempotency_key)
         effect_reused = False
 
+        # === TOOL EFFECT ===
+        # NONE
+        #   -> record INTENT
+        #   -> execute
+        #   -> record COMPLETED
+        #
+        # COMPLETED + same digest
+        #   -> reuse result
+        #
+        # INTENT
+        #   -> ambiguous
+        #   -> ESCALATE
+        #
+        # same key + different digest
+        #   -> ESCALATE
         if existing_effect is None:
             effects.record_intent(request=turn.action, request_digest=request_digest)
             output = tool.execute(turn.action)
