@@ -5,10 +5,12 @@ from reliable_agents.models import (
     DoneContract,
     FinalState,
     Goal,
+    VerificationResult,
     WorkerOutput,
 )
-from reliable_agents.storage import JsonlEffectStore, StorageLayout
+from reliable_agents.storage import JsonlEffectStore, JsonlEventStore, StorageLayout
 from reliable_agents.tool import WriteValueTool
+from reliable_agents.verifier import IndependentVerifier
 
 
 def make_effect_request(
@@ -287,3 +289,189 @@ def test_effect_digest_mismatch_escalates(
 
     assert outcome.state is FinalState.ESCALATED
     assert outcome.evidence is None
+
+
+def test_success_claim_does_not_override_wrong_value(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.chdir(tmp_path)
+
+    goal = Goal(
+        goal_id="goal-1",
+        task_class="code_change",
+        description="Write the required value",
+    )
+    contract = DoneContract(
+        contract_id="value-contract",
+        version="0.1.0",
+        required_value=4,
+    )
+
+    def dishonest_execute(
+        self,
+        request: ActionRequest,
+    ) -> WorkerOutput:
+        return WorkerOutput(
+            value=3,
+            summary="Success. Required value was written.",
+        )
+
+    monkeypatch.setattr(
+        WriteValueTool,
+        "execute",
+        dishonest_execute,
+    )
+
+    run_id = "dishonest-success-claim"
+
+    outcome = execute(
+        goal=goal,
+        contract=contract,
+        authoritative_tier=2,
+        retry_budget=1,
+        base_directory=tmp_path,
+        run_id=run_id,
+    )
+
+    layout = StorageLayout.create(
+        project_path=tmp_path,
+        base_directory=tmp_path,
+    )
+    events = JsonlEventStore(layout).load(run_id)
+
+    tool_completed = next(event for event in events if event["kind"] == "ToolCompleted")
+
+    assert tool_completed["payload"]["summary"] == (
+        "Success. Required value was written."
+    )
+    assert tool_completed["payload"]["value"] == 3
+
+    assert outcome.state is FinalState.ESCALATED
+    assert outcome.evidence is None
+    assert outcome.last_verification is not None
+    assert outcome.last_verification.passed is False
+
+
+def test_correct_output_is_not_verified_when_verifier_fails(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.chdir(tmp_path)
+
+    goal = Goal(
+        goal_id="goal-1",
+        task_class="code_change",
+        description="Write the required value",
+    )
+    contract = DoneContract(
+        contract_id="value-contract",
+        version="0.1.0",
+        required_value=4,
+    )
+
+    def correct_execute(
+        self,
+        request: ActionRequest,
+    ) -> WorkerOutput:
+        return WorkerOutput(
+            value=4,
+            summary="Stored value 4",
+        )
+
+    def rejecting_verify(
+        self,
+        goal: Goal,
+        contract: DoneContract,
+        output: WorkerOutput,
+    ) -> VerificationResult:
+        return VerificationResult(
+            passed=False,
+            check="forced_failure",
+            category="verification_failed",
+            evidence="Verifier rejected the result",
+            retryable=False,
+        )
+
+    monkeypatch.setattr(
+        WriteValueTool,
+        "execute",
+        correct_execute,
+    )
+
+    monkeypatch.setattr(
+        IndependentVerifier,
+        "verify",
+        rejecting_verify,
+    )
+
+    outcome = execute(
+        goal=goal,
+        contract=contract,
+        authoritative_tier=2,
+        retry_budget=1,
+        base_directory=tmp_path,
+    )
+
+    assert outcome.state is FinalState.ESCALATED
+    assert outcome.evidence is None
+    assert outcome.last_verification is not None
+    assert outcome.last_verification.passed is False
+
+
+def test_nonretryable_verification_failure_escalates_immediately(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.chdir(tmp_path)
+
+    goal = Goal(
+        goal_id="goal-1",
+        task_class="code_change",
+        description="Write the required value",
+    )
+    contract = DoneContract(
+        contract_id="value-contract",
+        version="0.1.0",
+        required_value=4,
+    )
+
+    verification_calls = 0
+
+    def nonretryable_verify(
+        self,
+        goal: Goal,
+        contract: DoneContract,
+        output: WorkerOutput,
+    ) -> VerificationResult:
+        nonlocal verification_calls
+        verification_calls += 1
+
+        return VerificationResult(
+            passed=False,
+            check="fatal_check",
+            category="fatal_verification_failure",
+            evidence="Failure cannot be repaired by retrying",
+            retryable=False,
+        )
+
+    monkeypatch.setattr(
+        IndependentVerifier,
+        "verify",
+        nonretryable_verify,
+    )
+
+    outcome = execute(
+        goal=goal,
+        contract=contract,
+        authoritative_tier=2,
+        retry_budget=5,
+        base_directory=tmp_path,
+    )
+
+    assert outcome.state is FinalState.ESCALATED
+    assert outcome.evidence is None
+    assert outcome.last_verification is not None
+    assert outcome.last_verification.retryable is False
+
+    assert verification_calls == 1
