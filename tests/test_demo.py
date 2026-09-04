@@ -1,4 +1,4 @@
-from reliable_agents.demo import execute
+from reliable_agents.supervisor import execute
 from reliable_agents.digest import action_request_digest, effect_idempotency_key
 from reliable_agents.models import (
     ActionRequest,
