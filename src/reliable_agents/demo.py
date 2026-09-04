@@ -1,7 +1,9 @@
+from dataclasses import dataclass
 from pathlib import Path
 
 import uuid_utils.compat as uuid
 
+from reliable_agents import tool
 from reliable_agents.digest import action_request_digest
 from reliable_agents.evidence import create_run_evidence
 from reliable_agents.models import (
@@ -10,6 +12,7 @@ from reliable_agents.models import (
     FinalState,
     Goal,
     RunOutcome,
+    VerificationResult,
     WorkerOutput,
 )
 from reliable_agents.policy import StaticPolicyEngine
@@ -17,6 +20,70 @@ from reliable_agents.storage import JsonlEffectStore, JsonlEventStore, StorageLa
 from reliable_agents.tool import WriteValueTool
 from reliable_agents.verifier import IndependentVerifier
 from reliable_agents.worker import EvidenceGuidedWorker
+
+
+@dataclass(frozen=True, slots=True)
+class ResumeState:
+    next_attempt: int
+    previous_failure: VerificationResult | None
+    checks: tuple[str, ...]
+    pending_verification_attempt: int | None
+    pending_output: WorkerOutput | None
+
+
+def reconstruct_resume_state(events: list[dict]) -> ResumeState:
+    last_attempt = 0
+    previous_failure: VerificationResult | None = None
+    checks: list[str] = []
+
+    tool_outputs: dict[int, WorkerOutput] = {}
+    verified_attempts: set[int] = set()
+
+    for event in events:
+        payload = event["payload"]
+
+        match event["kind"]:
+            case "AttemptStarted":
+                last_attempt = int(payload["attempt"])
+
+            case "ToolCompleted":
+                attempt = int(payload["attempt"])
+
+                tool_outputs[attempt] = WorkerOutput(
+                    value=int(payload["value"]), summary=str(payload["summary"])
+                )
+            case "VerificationCompleted":
+                attempt = int(payload["attempt"])
+
+                verification = VerificationResult(
+                    passed=bool(payload["passed"]),
+                    check=str(payload["check"]),
+                    category=str(payload["category"]),
+                    evidence=str(payload["evidence"]),
+                    retryable=bool(payload["retryable"]),
+                )
+
+                verified_attempts.add(attempt)
+                previous_failure = verification
+                checks.append(verification.check)
+
+    pending_output = tool_outputs.get(last_attempt)
+    if pending_output is not None and last_attempt not in verified_attempts:
+        return ResumeState(
+            next_attempt=last_attempt,
+            previous_failure=previous_failure,
+            checks=tuple(checks),
+            pending_verification_attempt=last_attempt,
+            pending_output=pending_output,
+        )
+
+    return ResumeState(
+        next_attempt=last_attempt + 1,
+        previous_failure=previous_failure,
+        checks=tuple(checks),
+        pending_verification_attempt=None,
+        pending_output=None,
+    )
 
 
 def reconstruct_final_state(events: list[dict]) -> FinalState | None:
@@ -63,56 +130,64 @@ def execute(
     checks = []
     tools_used = set()
 
-    events.append(
-        run_id=run_id,
-        kind="GoalCreated",
-        payload={
-            "goal_id": goal.goal_id,
-            "task_class": goal.task_class,
-            "description": goal.description,
-        },
-    )
-    events.append(
-        run_id=run_id,
-        kind="DoneContractBound",
-        payload={
-            "contract_id": contract.contract_id,
-            "version": contract.version,
-            "required_value": contract.required_value,
-        },
-    )
-
-    admission = policy.admit(goal=goal, authoritative_tier=authoritative_tier)
-
-    print("run_id", run_id)
-    print("admission", admission)
-
-    events.append(
-        run_id=run_id,
-        kind="AdmissionDecided",
-        payload={
-            "decision": admission.decision.value,
-            "reason": admission.reason,
-            "authoritative_tier": authoritative_tier,
-        },
-    )
-
-    if admission.decision is not Decision.ALLOW:
+    if not history:
         events.append(
-            run_id,
-            "RunBlocked",
-            {
-                "reason": admission.reason,
+            run_id=run_id,
+            kind="GoalCreated",
+            payload={
+                "goal_id": goal.goal_id,
+                "task_class": goal.task_class,
+                "description": goal.description,
             },
         )
-        return RunOutcome(
+        events.append(
             run_id=run_id,
-            state=FinalState.BLOCKED,
-            evidence=None,
-            last_verification=None,
+            kind="DoneContractBound",
+            payload={
+                "contract_id": contract.contract_id,
+                "version": contract.version,
+                "required_value": contract.required_value,
+            },
         )
 
-    for attempt in range(1, retry_budget + 1):
+        admission = policy.admit(goal=goal, authoritative_tier=authoritative_tier)
+
+        print("run_id", run_id)
+        print("admission", admission)
+
+        events.append(
+            run_id=run_id,
+            kind="AdmissionDecided",
+            payload={
+                "decision": admission.decision.value,
+                "reason": admission.reason,
+                "authoritative_tier": authoritative_tier,
+            },
+        )
+
+        if admission.decision is not Decision.ALLOW:
+            events.append(
+                run_id,
+                "RunBlocked",
+                {
+                    "reason": admission.reason,
+                },
+            )
+            return RunOutcome(
+                run_id=run_id,
+                state=FinalState.BLOCKED,
+                evidence=None,
+                last_verification=None,
+            )
+        start_attempt = 1
+    else:
+        resume_state = reconstruct_resume_state(history)
+
+        previous_failure = resume_state.previous_failure
+        start_attempt = resume_state.next_attempt
+        checks = list(resume_state.checks)
+
+    for attempt in range(start_attempt, retry_budget + 1):
         print("=" * 80)
         print(f"attempt {attempt}")
 

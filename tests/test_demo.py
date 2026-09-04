@@ -475,3 +475,117 @@ def test_nonretryable_verification_failure_escalates_immediately(
     assert outcome.last_verification.retryable is False
 
     assert verification_calls == 1
+
+
+def test_unfinished_run_resumes_from_next_attempt(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.chdir(tmp_path)
+
+    goal = Goal(
+        goal_id="goal-1",
+        task_class="code_change",
+        description="Write the required value",
+    )
+    contract = DoneContract(
+        contract_id="value-contract",
+        version="0.1.0",
+        required_value=4,
+    )
+
+    run_id = "resume-after-failed-verification"
+
+    layout = StorageLayout.create(
+        project_path=tmp_path,
+        base_directory=tmp_path,
+    )
+    events = JsonlEventStore(layout)
+
+    events.append(
+        run_id,
+        "GoalCreated",
+        {
+            "goal_id": goal.goal_id,
+            "task_class": goal.task_class,
+            "description": goal.description,
+        },
+    )
+
+    events.append(
+        run_id,
+        "DoneContractBound",
+        {
+            "contract_id": contract.contract_id,
+            "version": contract.version,
+            "required_value": contract.required_value,
+        },
+    )
+
+    events.append(
+        run_id,
+        "AdmissionDecided",
+        {
+            "decision": "ALLOW",
+            "reason": "admission allowed",
+            "authoritative_tier": 2,
+        },
+    )
+
+    events.append(
+        run_id,
+        "AttemptStarted",
+        {
+            "attempt": 1,
+        },
+    )
+
+    events.append(
+        run_id,
+        "VerificationCompleted",
+        {
+            "attempt": 1,
+            "passed": False,
+            "check": "required_value",
+            "category": "incorrect_value",
+            "evidence": "Expected 4 observed 3",
+            "retryable": True,
+        },
+    )
+
+    events.append(
+        run_id,
+        "RecoveryStarted",
+        {
+            "attempt": 1,
+            "category": "incorrect_value",
+            "evidence": "Expected 4 observed 3",
+        },
+    )
+
+    outcome = execute(
+        goal=goal,
+        contract=contract,
+        authoritative_tier=2,
+        retry_budget=2,
+        run_id=run_id,
+        base_directory=tmp_path,
+    )
+
+    history = events.load(run_id)
+
+    assert outcome.state is FinalState.VERIFIED
+    assert outcome.evidence is not None
+    assert outcome.evidence.attempts == 2
+
+    assert sum(event["kind"] == "GoalCreated" for event in history) == 1
+
+    assert sum(event["kind"] == "DoneContractBound" for event in history) == 1
+
+    attempts = [
+        event["payload"]["attempt"]
+        for event in history
+        if event["kind"] == "AttemptStarted"
+    ]
+
+    assert attempts == [1, 2]
